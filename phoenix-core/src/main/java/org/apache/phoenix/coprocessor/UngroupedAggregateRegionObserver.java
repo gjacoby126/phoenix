@@ -1123,8 +1123,6 @@ public class UngroupedAggregateRegionObserver extends BaseScannerRegionObserver 
             m.setAttribute(BaseScannerRegionObserver.REPLAY_WRITES,
                     BaseScannerRegionObserver.REPLAY_INDEX_REBUILD_WRITES);
             m.setAttribute(BaseScannerRegionObserver.CLIENT_VERSION, clientVersionBytes);
-            // Since we're replaying existing mutations, it makes no sense to write them to the wal
-            m.setDurability(Durability.SKIP_WAL);
         }
 
         private Delete generateDeleteMarkers(List<Cell> row) {
