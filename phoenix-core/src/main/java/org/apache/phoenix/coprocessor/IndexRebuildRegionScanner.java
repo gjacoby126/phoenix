@@ -93,6 +93,8 @@ import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
 import org.apache.phoenix.hbase.index.util.IndexManagementUtil;
 import org.apache.phoenix.index.GlobalIndexChecker;
 import org.apache.phoenix.index.IndexMaintainer;
+import org.apache.phoenix.index.IndexVerificationOutputRepository;
+import org.apache.phoenix.index.IndexVerificationResultRepository;
 import org.apache.phoenix.index.PhoenixIndexCodec;
 import org.apache.phoenix.mapreduce.index.IndexTool;
 import org.apache.phoenix.query.KeyRange;
@@ -118,7 +120,6 @@ public class IndexRebuildRegionScanner extends BaseRegionScanner {
     public static final String NO_EXPECTED_MUTATION = "No expected mutation";
     public static final String
             ACTUAL_MUTATION_IS_NULL_OR_EMPTY = "actualMutationList is null or empty";
-    public static final byte[] ROW_KEY_SEPARATOR_BYTE = Bytes.toBytes("|");
     private long pageSizeInRows = Long.MAX_VALUE;
     private int rowCountPerTask;
     private boolean hasMore;
@@ -154,6 +155,8 @@ public class IndexRebuildRegionScanner extends BaseRegionScanner {
     private int  singleRowRebuildReturnCode;
     private Map<byte[], NavigableSet<byte[]>> familyMap;
     private byte[][] viewConstants;
+    private IndexVerificationResultRepository verificationResultRepository;
+    private IndexVerificationOutputRepository verificationOutputRepository;
 
     @VisibleForTesting
     public IndexRebuildRegionScanner(final RegionScanner innerScanner, final Region region, final Scan scan,
@@ -206,8 +209,10 @@ public class IndexRebuildRegionScanner extends BaseRegionScanner {
                 hTableFactory = ServerUtil.getDelegateHTableFactory(env, ServerUtil.ConnectionType.INDEX_WRITER_CONNECTION);
                 indexHTable = hTableFactory.getTable(new ImmutableBytesPtr(indexMaintainer.getIndexTableName()));
                 indexTableTTL = indexHTable.getTableDescriptor().getColumnFamilies()[0].getTimeToLive();
-                outputHTable = hTableFactory.getTable(new ImmutableBytesPtr(IndexTool.OUTPUT_TABLE_NAME_BYTES));
-                resultHTable = hTableFactory.getTable(new ImmutableBytesPtr(IndexTool.RESULT_TABLE_NAME_BYTES));
+                verificationResultRepository =
+                    new IndexVerificationResultRepository(indexMaintainer.getIndexTableName(), hTableFactory);
+                verificationOutputRepository =
+                    new IndexVerificationOutputRepository(indexMaintainer.getIndexTableName(), hTableFactory);
                 indexKeyToMutationMap = Maps.newTreeMap(Bytes.BYTES_COMPARATOR);
                 dataKeyToMutationMap = Maps.newTreeMap(Bytes.BYTES_COMPARATOR);
                 pool = new WaitForCompletionTaskRunner(ThreadPoolManager.getExecutor(
@@ -254,80 +259,19 @@ public class IndexRebuildRegionScanner extends BaseRegionScanner {
         return false;
     }
 
-    private static byte[] generateResultTableRowKey(long ts, byte[] indexTableName,  byte [] regionName,
-                                                    byte[] startRow, byte[] stopRow) {
-        byte[] keyPrefix = Bytes.toBytes(Long.toString(ts));
-        int targetOffset = 0;
-        // The row key for the result table : timestamp | index table name | datable table region name |
-        //                                    scan start row | scan stop row
-        byte[] rowKey = new byte[keyPrefix.length + ROW_KEY_SEPARATOR_BYTE.length + indexTableName.length +
-                ROW_KEY_SEPARATOR_BYTE.length + regionName.length + ROW_KEY_SEPARATOR_BYTE.length +
-                startRow.length + ROW_KEY_SEPARATOR_BYTE.length + stopRow.length];
-        Bytes.putBytes(rowKey, targetOffset, keyPrefix, 0, keyPrefix.length);
-        targetOffset += keyPrefix.length;
-        Bytes.putBytes(rowKey, targetOffset, ROW_KEY_SEPARATOR_BYTE, 0, ROW_KEY_SEPARATOR_BYTE.length);
-        targetOffset += ROW_KEY_SEPARATOR_BYTE.length;
-        Bytes.putBytes(rowKey, targetOffset, indexTableName, 0, indexTableName.length);
-        targetOffset += indexTableName.length;
-        Bytes.putBytes(rowKey, targetOffset, ROW_KEY_SEPARATOR_BYTE, 0, ROW_KEY_SEPARATOR_BYTE.length);
-        targetOffset += ROW_KEY_SEPARATOR_BYTE.length;
-        Bytes.putBytes(rowKey, targetOffset, regionName, 0, regionName.length);
-        targetOffset += regionName.length;
-        Bytes.putBytes(rowKey, targetOffset, ROW_KEY_SEPARATOR_BYTE, 0, ROW_KEY_SEPARATOR_BYTE.length);
-        targetOffset += ROW_KEY_SEPARATOR_BYTE.length;
-        Bytes.putBytes(rowKey, targetOffset, startRow, 0, startRow.length);
-        targetOffset += startRow.length;
-        Bytes.putBytes(rowKey, targetOffset, ROW_KEY_SEPARATOR_BYTE, 0, ROW_KEY_SEPARATOR_BYTE.length);
-        targetOffset += ROW_KEY_SEPARATOR_BYTE.length;
-        Bytes.putBytes(rowKey, targetOffset, stopRow, 0, stopRow.length);
-        return rowKey;
-    }
 
-    private void logToIndexToolResultTable() throws IOException {
-        long scanMaxTs = scan.getTimeRange().getMax();
-        byte[] rowKey = generateResultTableRowKey(scanMaxTs, indexHTable.getName().toBytes(),
-                Bytes.toBytes(region.getRegionInfo().getRegionNameAsString()), scan.getStartRow(), scan.getStopRow());
-        Put put = new Put(rowKey);
-        put.addColumn(RESULT_TABLE_COLUMN_FAMILY, SCANNED_DATA_ROW_COUNT_BYTES,
-                scanMaxTs, Bytes.toBytes(Long.toString(verificationResult.scannedDataRowCount)));
-        put.addColumn(RESULT_TABLE_COLUMN_FAMILY, REBUILT_INDEX_ROW_COUNT_BYTES,
-                scanMaxTs, Bytes.toBytes(Long.toString(verificationResult.rebuiltIndexRowCount)));
-        if (verifyType == IndexTool.IndexVerifyType.BEFORE || verifyType == IndexTool.IndexVerifyType.BOTH ||
-                verifyType == IndexTool.IndexVerifyType.ONLY) {
-            put.addColumn(RESULT_TABLE_COLUMN_FAMILY, BEFORE_REBUILD_VALID_INDEX_ROW_COUNT_BYTES,
-                    scanMaxTs, Bytes.toBytes(Long.toString(verificationResult.before.validIndexRowCount)));
-            put.addColumn(RESULT_TABLE_COLUMN_FAMILY, BEFORE_REBUILD_EXPIRED_INDEX_ROW_COUNT_BYTES,
-                    scanMaxTs, Bytes.toBytes(Long.toString(verificationResult.before.expiredIndexRowCount)));
-            put.addColumn(RESULT_TABLE_COLUMN_FAMILY, BEFORE_REBUILD_MISSING_INDEX_ROW_COUNT_BYTES,
-                    scanMaxTs, Bytes.toBytes(Long.toString(verificationResult.before.missingIndexRowCount)));
-            put.addColumn(RESULT_TABLE_COLUMN_FAMILY, BEFORE_REBUILD_INVALID_INDEX_ROW_COUNT_BYTES,
-                    scanMaxTs, Bytes.toBytes(Long.toString(verificationResult.before.invalidIndexRowCount)));
-        }
-        if (verifyType == IndexTool.IndexVerifyType.AFTER || verifyType == IndexTool.IndexVerifyType.BOTH) {
-            put.addColumn(RESULT_TABLE_COLUMN_FAMILY, AFTER_REBUILD_VALID_INDEX_ROW_COUNT_BYTES,
-                    scanMaxTs, Bytes.toBytes(Long.toString(verificationResult.after.validIndexRowCount)));
-            put.addColumn(RESULT_TABLE_COLUMN_FAMILY, AFTER_REBUILD_EXPIRED_INDEX_ROW_COUNT_BYTES,
-                    scanMaxTs, Bytes.toBytes(Long.toString(verificationResult.after.expiredIndexRowCount)));
-            put.addColumn(RESULT_TABLE_COLUMN_FAMILY, AFTER_REBUILD_MISSING_INDEX_ROW_COUNT_BYTES,
-                    scanMaxTs, Bytes.toBytes(Long.toString(verificationResult.after.missingIndexRowCount)));
-            put.addColumn(RESULT_TABLE_COLUMN_FAMILY, AFTER_REBUILD_INVALID_INDEX_ROW_COUNT_BYTES,
-                    scanMaxTs, Bytes.toBytes(Long.toString(verificationResult.after.invalidIndexRowCount)));
-        }
-        resultHTable.put(put);
-    }
 
     @Override
     public void close() throws IOException {
         innerScanner.close();
         if (verify) {
             try {
-                logToIndexToolResultTable();
+                verificationResultRepository.logToIndexToolResultTable(verificationResult, scan,
+                    verifyType, region.getRegionInfo().getRegionName());
             } finally {
                 this.pool.stop("IndexRebuildRegionScanner is closing");
                 hTableFactory.shutdown();
                 indexHTable.close();
-                outputHTable.close();
-                resultHTable.close();
             }
         }
     }
@@ -412,80 +356,18 @@ public class IndexRebuildRegionScanner extends BaseRegionScanner {
         return true;
     }
 
-    @VisibleForTesting
     public void logToIndexToolOutputTable(byte[] dataRowKey, byte[] indexRowKey, long dataRowTs, long indexRowTs,
-                                           String errorMsg) throws IOException {
-        logToIndexToolOutputTable(dataRowKey, indexRowKey, dataRowTs, indexRowTs,
-                errorMsg, null, null);
-
-    }
-
-    private static byte[] generateOutputTableRowKey(long ts, byte[] indexTableName, byte[] dataRowKey ) {
-        byte[] keyPrefix = Bytes.toBytes(Long.toString(ts));
-        byte[] rowKey;
-        int targetOffset = 0;
-        // The row key for the output table : timestamp | index table name | data row key
-        rowKey = new byte[keyPrefix.length + ROW_KEY_SEPARATOR_BYTE.length + indexTableName.length +
-                ROW_KEY_SEPARATOR_BYTE.length + dataRowKey.length];
-        Bytes.putBytes(rowKey, targetOffset, keyPrefix, 0, keyPrefix.length);
-        targetOffset += keyPrefix.length;
-        Bytes.putBytes(rowKey, targetOffset, ROW_KEY_SEPARATOR_BYTE, 0, ROW_KEY_SEPARATOR_BYTE.length);
-        targetOffset += ROW_KEY_SEPARATOR_BYTE.length;
-        Bytes.putBytes(rowKey, targetOffset, indexTableName, 0, indexTableName.length);
-        targetOffset += indexTableName.length;
-        Bytes.putBytes(rowKey, targetOffset, ROW_KEY_SEPARATOR_BYTE, 0, ROW_KEY_SEPARATOR_BYTE.length);
-        targetOffset += ROW_KEY_SEPARATOR_BYTE.length;
-        Bytes.putBytes(rowKey, targetOffset, dataRowKey, 0, dataRowKey.length);
-        return rowKey;
+                                          String errorMsg) throws IOException {
+        logToIndexToolOutputTable(dataRowKey, indexRowKey, dataRowTs, indexRowTs, errorMsg, null, null);
     }
 
     @VisibleForTesting
     public void logToIndexToolOutputTable(byte[] dataRowKey, byte[] indexRowKey, long dataRowTs, long indexRowTs,
-                                           String errorMsg, byte[] expectedValue, byte[] actualValue) throws IOException {
-        final byte[] E_VALUE_PREFIX_BYTES = Bytes.toBytes(" E:");
-        final byte[] A_VALUE_PREFIX_BYTES = Bytes.toBytes(" A:");
-        final int PREFIX_LENGTH = 3;
-        final int TOTAL_PREFIX_LENGTH = 6;
-        final byte[] PHASE_BEFORE_VALUE = Bytes.toBytes("BEFORE");
-        final byte[] PHASE_AFTER_VALUE = Bytes.toBytes("AFTER");
-        long scanMaxTs = scan.getTimeRange().getMax();
-        byte[] rowKey = generateOutputTableRowKey(scanMaxTs, indexHTable.getName().toBytes(), dataRowKey);
-        Put put = new Put(rowKey);
-        put.addColumn(IndexTool.OUTPUT_TABLE_COLUMN_FAMILY, IndexTool.DATA_TABLE_NAME_BYTES,
-                scanMaxTs, region.getRegionInfo().getTable().getName());
-        put.addColumn(IndexTool.OUTPUT_TABLE_COLUMN_FAMILY, IndexTool.INDEX_TABLE_NAME_BYTES,
-                scanMaxTs, indexMaintainer.getIndexTableName());
-        put.addColumn(IndexTool.OUTPUT_TABLE_COLUMN_FAMILY, IndexTool.DATA_TABLE_TS_BYTES,
-                    scanMaxTs, Bytes.toBytes(Long.toString(dataRowTs)));
-
-        put.addColumn(IndexTool.OUTPUT_TABLE_COLUMN_FAMILY, IndexTool.INDEX_TABLE_ROW_KEY_BYTES,
-                scanMaxTs, indexRowKey);
-        put.addColumn(IndexTool.OUTPUT_TABLE_COLUMN_FAMILY, IndexTool.INDEX_TABLE_TS_BYTES,
-                scanMaxTs, Bytes.toBytes(Long.toString(indexRowTs)));
-        byte[] errorMessageBytes;
-        if (expectedValue != null) {
-            errorMessageBytes = new byte[errorMsg.length() + expectedValue.length + actualValue.length +
-                    TOTAL_PREFIX_LENGTH];
-            Bytes.putBytes(errorMessageBytes, 0, Bytes.toBytes(errorMsg), 0, errorMsg.length());
-            int length = errorMsg.length();
-            Bytes.putBytes(errorMessageBytes, length, E_VALUE_PREFIX_BYTES, 0, PREFIX_LENGTH);
-            length += PREFIX_LENGTH;
-            Bytes.putBytes(errorMessageBytes, length, expectedValue, 0, expectedValue.length);
-            length += expectedValue.length;
-            Bytes.putBytes(errorMessageBytes, length, A_VALUE_PREFIX_BYTES, 0, PREFIX_LENGTH);
-            length += PREFIX_LENGTH;
-            Bytes.putBytes(errorMessageBytes, length, actualValue, 0, actualValue.length);
-
-        } else {
-            errorMessageBytes = Bytes.toBytes(errorMsg);
-        }
-        put.addColumn(IndexTool.OUTPUT_TABLE_COLUMN_FAMILY, IndexTool.ERROR_MESSAGE_BYTES, scanMaxTs, errorMessageBytes);
-        if (isBeforeRebuilt) {
-            put.addColumn(IndexTool.OUTPUT_TABLE_COLUMN_FAMILY, IndexTool.VERIFICATION_PHASE_BYTES, scanMaxTs, PHASE_BEFORE_VALUE);
-        } else {
-            put.addColumn(IndexTool.OUTPUT_TABLE_COLUMN_FAMILY, IndexTool.VERIFICATION_PHASE_BYTES, scanMaxTs, PHASE_AFTER_VALUE);
-        }
-        outputHTable.put(put);
+                                           String errorMsg, byte[] expectedVaue, byte[] actualValue)
+        throws IOException {
+        verificationOutputRepository.logToIndexToolOutputTable(dataRowKey, indexRowKey, dataRowTs, indexRowTs,
+                errorMsg, expectedVaue, actualValue, scan,
+            region.getRegionInfo().getTable().getName(), isBeforeRebuilt);
     }
 
     private static long getMaxTimestamp(Mutation m) {

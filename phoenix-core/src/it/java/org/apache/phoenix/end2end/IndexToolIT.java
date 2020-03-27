@@ -44,6 +44,7 @@ import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.phoenix.coprocessor.IndexRebuildRegionScanner;
 import org.apache.phoenix.hbase.index.IndexRegionObserver;
+import org.apache.phoenix.index.IndexVerificationResultRepository;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.mapreduce.index.IndexTool;
 import org.apache.phoenix.mapreduce.index.PhoenixIndexImportDirectMapper;
@@ -464,12 +465,13 @@ public class IndexToolIT extends BaseUniqueNamesOwnClusterIT {
 
         // This method verifies the common prefix, i.e., "timestamp | index table name | ", since the rest of the
         // fields may include the separator key
-        int offset = Bytes.indexOf(rowKey, IndexRebuildRegionScanner.ROW_KEY_SEPARATOR_BYTE);
+        int offset = Bytes.indexOf(rowKey, IndexVerificationResultRepository.ROW_KEY_SEPARATOR_BYTE);
         offset++;
         byte[] indexTableFullNameBytes = Bytes.toBytes(indexTableFullName);
         assertEquals(Bytes.compareTo(rowKey, offset, indexTableFullNameBytes.length, indexTableFullNameBytes, 0,
                 indexTableFullNameBytes.length), 0);
-        assertEquals(rowKey[offset + indexTableFullNameBytes.length], IndexRebuildRegionScanner.ROW_KEY_SEPARATOR_BYTE[0]);
+        assertEquals(rowKey[offset + indexTableFullNameBytes.length],
+            IndexVerificationResultRepository.ROW_KEY_SEPARATOR_BYTE[0]);
     }
 
     private Cell getErrorMessageFromIndexToolOutputTable(Connection conn, String dataTableFullName, String indexTableFullName)
@@ -504,7 +506,9 @@ public class IndexToolIT extends BaseUniqueNamesOwnClusterIT {
                 }
             }
         }
-        assertTrue(dataTableNameCheck && indexTableNameCheck && errorMessageCell != null);
+        assertTrue( "DataTableNameCheck was false", dataTableNameCheck);
+        assertTrue("IndexTableNameCheck was false", indexTableNameCheck);
+        assertTrue("Error message cell was null", errorMessageCell != null);
         verifyIndexTableRowKey(CellUtil.cloneRow(errorMessageCell), indexTableFullName);
         hIndexTable = conn.unwrap(PhoenixConnection.class).getQueryServices()
                 .getTable(IndexTool.RESULT_TABLE_NAME_BYTES);
