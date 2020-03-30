@@ -5,6 +5,7 @@ import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.phoenix.coprocessor.IndexToolVerificationResult;
 import org.apache.phoenix.hbase.index.table.HTableFactory;
 import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
 import org.apache.phoenix.mapreduce.index.IndexTool;
@@ -19,10 +20,13 @@ public class IndexVerificationOutputRepository {
 
     public IndexVerificationOutputRepository(byte[] indexName, HTableFactory hTableFactory) throws IOException {
         this.indexName = indexName;
-        outputHTable = hTableFactory.getTable(new ImmutableBytesPtr(IndexTool.RESULT_TABLE_NAME_BYTES));
+        outputHTable = hTableFactory.getTable(new ImmutableBytesPtr(IndexTool.OUTPUT_TABLE_NAME_BYTES));
         indexHTable = hTableFactory.getTable(new ImmutableBytesPtr(indexName));
     }
 
+    public IndexToolVerificationResult getVerificationResultByTimestamp(){
+
+    }
     public static byte[] generateOutputTableRowKey(long ts, byte[] indexTableName, byte[] dataRowKey ) {
         byte[] keyPrefix = Bytes.toBytes(Long.toString(ts));
         byte[] rowKey;

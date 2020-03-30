@@ -485,6 +485,7 @@ public class IndexToolIT extends BaseUniqueNamesOwnClusterIT {
         boolean dataTableNameCheck = false;
         boolean indexTableNameCheck = false;
         Cell errorMessageCell = null;
+        TestUtil.dumpTable(conn, TableName.valueOf(IndexTool.OUTPUT_TABLE_NAME_BYTES));
         for (Result result = scanner.next(); result != null; result = scanner.next()) {
             for (Cell cell : result.rawCells()) {
                 assertTrue(Bytes.compareTo(cell.getFamilyArray(), cell.getFamilyOffset(), cell.getFamilyLength(),
