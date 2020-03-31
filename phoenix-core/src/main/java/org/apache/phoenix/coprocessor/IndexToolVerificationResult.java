@@ -19,28 +19,20 @@ package org.apache.phoenix.coprocessor;
 
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
-import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.client.Result;
-import org.apache.hadoop.hbase.client.ResultScanner;
-import org.apache.hadoop.hbase.client.Scan;
-import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.phoenix.mapreduce.index.IndexTool;
 
-import java.io.IOException;
-import java.util.Arrays;
-
-import static org.apache.phoenix.mapreduce.index.IndexTool.AFTER_REBUILD_EXPIRED_INDEX_ROW_COUNT_BYTES;
-import static org.apache.phoenix.mapreduce.index.IndexTool.AFTER_REBUILD_INVALID_INDEX_ROW_COUNT_BYTES;
-import static org.apache.phoenix.mapreduce.index.IndexTool.AFTER_REBUILD_MISSING_INDEX_ROW_COUNT_BYTES;
-import static org.apache.phoenix.mapreduce.index.IndexTool.AFTER_REBUILD_VALID_INDEX_ROW_COUNT_BYTES;
-import static org.apache.phoenix.mapreduce.index.IndexTool.BEFORE_REBUILD_EXPIRED_INDEX_ROW_COUNT_BYTES;
-import static org.apache.phoenix.mapreduce.index.IndexTool.BEFORE_REBUILD_INVALID_INDEX_ROW_COUNT_BYTES;
-import static org.apache.phoenix.mapreduce.index.IndexTool.BEFORE_REBUILD_MISSING_INDEX_ROW_COUNT_BYTES;
-import static org.apache.phoenix.mapreduce.index.IndexTool.BEFORE_REBUILD_VALID_INDEX_ROW_COUNT_BYTES;
-import static org.apache.phoenix.mapreduce.index.IndexTool.REBUILT_INDEX_ROW_COUNT_BYTES;
-import static org.apache.phoenix.mapreduce.index.IndexTool.RESULT_TABLE_COLUMN_FAMILY;
-import static org.apache.phoenix.mapreduce.index.IndexTool.SCANNED_DATA_ROW_COUNT_BYTES;
+import static org.apache.phoenix.mapreduce.index.IndexVerificationResultRepository.AFTER_REBUILD_EXPIRED_INDEX_ROW_COUNT_BYTES;
+import static org.apache.phoenix.mapreduce.index.IndexVerificationResultRepository.AFTER_REBUILD_INVALID_INDEX_ROW_COUNT_BYTES;
+import static org.apache.phoenix.mapreduce.index.IndexVerificationResultRepository.AFTER_REBUILD_MISSING_INDEX_ROW_COUNT_BYTES;
+import static org.apache.phoenix.mapreduce.index.IndexVerificationResultRepository.AFTER_REBUILD_VALID_INDEX_ROW_COUNT_BYTES;
+import static org.apache.phoenix.mapreduce.index.IndexVerificationResultRepository.BEFORE_REBUILD_EXPIRED_INDEX_ROW_COUNT_BYTES;
+import static org.apache.phoenix.mapreduce.index.IndexVerificationResultRepository.BEFORE_REBUILD_INVALID_INDEX_ROW_COUNT_BYTES;
+import static org.apache.phoenix.mapreduce.index.IndexVerificationResultRepository.BEFORE_REBUILD_MISSING_INDEX_ROW_COUNT_BYTES;
+import static org.apache.phoenix.mapreduce.index.IndexVerificationResultRepository.BEFORE_REBUILD_VALID_INDEX_ROW_COUNT_BYTES;
+import static org.apache.phoenix.mapreduce.index.IndexVerificationResultRepository.REBUILT_INDEX_ROW_COUNT_BYTES;
+import static org.apache.phoenix.mapreduce.index.IndexVerificationResultRepository.RESULT_TABLE_COLUMN_FAMILY;
+import static org.apache.phoenix.mapreduce.index.IndexVerificationResultRepository.SCANNED_DATA_ROW_COUNT_BYTES;
 
 public class IndexToolVerificationResult {
     public static class PhaseResult {
@@ -215,7 +207,7 @@ public class IndexToolVerificationResult {
                 cell.getValueOffset(), cell.getValueLength()));
     }
 
-    private void update(Cell cell) {
+    public void update(Cell cell) {
         if (CellUtil
                 .matchingColumn(cell, RESULT_TABLE_COLUMN_FAMILY, SCANNED_DATA_ROW_COUNT_BYTES)) {
             addScannedDataRowCount(getValue(cell));
@@ -238,46 +230,6 @@ public class IndexToolVerificationResult {
         } else if (CellUtil.matchingColumn(cell, RESULT_TABLE_COLUMN_FAMILY, AFTER_REBUILD_INVALID_INDEX_ROW_COUNT_BYTES)) {
             addAfterRebuildInvalidIndexRowCount(getValue(cell));
         }
-    }
-
-    public static byte[] calculateTheClosestNextRowKeyForPrefix(byte[] rowKeyPrefix) {
-        // Essentially we are treating it like an 'unsigned very very long' and doing +1 manually.
-        // Search for the place where the trailing 0xFFs start
-        int offset = rowKeyPrefix.length;
-        while (offset > 0) {
-            if (rowKeyPrefix[offset - 1] != (byte) 0xFF) {
-                break;
-            }
-            offset--;
-        }
-        if (offset == 0) {
-            // We got an 0xFFFF... (only FFs) stopRow value which is
-            // the last possible prefix before the end of the table.
-            // So set it to stop at the 'end of the table'
-            return HConstants.EMPTY_END_ROW;
-        }
-        // Copy the right length of the original
-        byte[] newStopRow = Arrays.copyOfRange(rowKeyPrefix, 0, offset);
-        // And increment the last one
-        newStopRow[newStopRow.length - 1]++;
-        return newStopRow;
-    }
-
-    public static IndexToolVerificationResult getVerificationResult(Table hTable, long ts)
-            throws IOException {
-        IndexToolVerificationResult verificationResult = new IndexToolVerificationResult();
-        byte[] startRowKey = Bytes.toBytes(Long.toString(ts));
-        byte[] stopRowKey = calculateTheClosestNextRowKeyForPrefix(startRowKey);
-        Scan scan = new Scan();
-        scan.setStartRow(startRowKey);
-        scan.setStopRow(stopRowKey);
-        ResultScanner scanner = hTable.getScanner(scan);
-        for (Result result = scanner.next(); result != null; result = scanner.next()) {
-            for (Cell cell : result.rawCells()) {
-                verificationResult.update(cell);
-            }
-        }
-        return verificationResult;
     }
 
     public boolean isVerificationFailed(IndexTool.IndexVerifyType verifyType) {
